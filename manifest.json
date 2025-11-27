@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Crypto Price in Tab",
+  "version": "1.0.0",
+  "description": "실시간 코인 가격을 탭 타이틀에 표시합니다",
+  "permissions": ["storage", "alarms", "tabs", "scripting"],
+  "host_permissions": ["https://api.coingecko.com/*", "<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  }
+}
