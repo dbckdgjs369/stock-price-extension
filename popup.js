@@ -1,5 +1,6 @@
 const searchForm = document.getElementById("searchForm");
 const searchInput = document.getElementById("searchInput");
+const searchModeButtons = document.querySelectorAll("[data-search-mode]");
 const searchStatus = document.getElementById("searchStatus");
 const searchResults = document.getElementById("searchResults");
 const manualCreate = document.getElementById("manualCreate");
@@ -16,6 +17,27 @@ let popupState = {
   quotesBySymbol: {},
   stockError: null,
 };
+let searchMode = "stock";
+
+function normalizeManualEntry(query) {
+  const trimmed = query.trim();
+  if (searchMode !== "crypto") {
+    return { symbol: trimmed, shortName: trimmed };
+  }
+
+  return {
+    symbol: trimmed.includes("-") ? trimmed.toUpperCase() : `${trimmed.toUpperCase()}-USD`,
+    shortName: trimmed.toUpperCase(),
+  };
+}
+
+function updateSearchModeUI() {
+  searchModeButtons.forEach((button) => {
+    button.dataset.active = button.dataset.searchMode === searchMode ? "true" : "false";
+  });
+  searchInput.placeholder =
+    searchMode === "crypto" ? "예: BTC, ETH, BTC-USD" : "예: 삼성전자, AAPL, TSLA";
+}
 
 function formatPrice(quote) {
   if (!quote || typeof quote.price !== "number") {
@@ -111,15 +133,17 @@ function renderManualCreate(query, message) {
     searchStatus.textContent = message;
   }
 
+  const manualEntry = normalizeManualEntry(trimmed);
+
   const item = document.createElement("div");
   item.className = "result-item";
   item.innerHTML = `
     <div>
-      <div class="result-title">${trimmed}</div>
-      <div class="result-subtitle">검색 없이 입력값으로 바로 생성</div>
+      <div class="result-title">${manualEntry.shortName}</div>
+      <div class="result-subtitle">${manualEntry.symbol} · 검색 없이 입력값으로 바로 생성</div>
     </div>
-    <button class="action-button" data-symbol="${trimmed}" data-name="${encodeURIComponent(
-    trimmed
+    <button class="action-button" data-symbol="${manualEntry.symbol}" data-name="${encodeURIComponent(
+    manualEntry.shortName
   )}">생성</button>
   `;
   manualCreate.appendChild(item);
@@ -128,9 +152,20 @@ function renderManualCreate(query, message) {
 async function loadState() {
   popupState = await chrome.runtime.sendMessage({ type: "GET_POPUP_STATE" });
   searchStatus.textContent = popupState.stockError || "";
+  updateSearchModeUI();
   renderPending();
   renderWidgets();
 }
+
+searchModeButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    searchMode = button.dataset.searchMode || "stock";
+    updateSearchModeUI();
+    searchResults.innerHTML = "";
+    manualCreate.innerHTML = "";
+    searchStatus.textContent = "";
+  });
+});
 
 async function ensureContentScriptOnActiveTab() {
   const [activeTab] = await chrome.tabs.query({
@@ -177,6 +212,7 @@ searchForm.addEventListener("submit", async (event) => {
   const response = await chrome.runtime.sendMessage({
     type: "SEARCH_SYMBOLS",
     query,
+    mode: searchMode,
   });
 
   if (response.error) {

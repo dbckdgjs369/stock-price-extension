@@ -38,7 +38,7 @@ async function fetchQuotes(symbols) {
   );
 }
 
-async function searchSymbols(query) {
+async function searchSymbols(query, mode = "stock") {
   const response = await fetch(
     `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(
       query
@@ -52,6 +52,8 @@ async function searchSymbols(query) {
   const payload = await response.json();
   const quotes = payload?.quotes || [];
   const seen = new Set();
+  const allowedTypes =
+    mode === "crypto" ? new Set(["CRYPTOCURRENCY"]) : new Set(["EQUITY", "ETF"]);
 
   return quotes.reduce((results, quote) => {
     const quoteType = quote.quoteType || quote.typeDisp;
@@ -59,7 +61,7 @@ async function searchSymbols(query) {
     if (
       !quote.symbol ||
       seen.has(quote.symbol) ||
-      (quoteType !== "EQUITY" && quoteType !== "ETF")
+      !allowedTypes.has(quoteType)
     ) {
       return results;
     }
@@ -185,7 +187,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.type === "SEARCH_SYMBOLS") {
-    searchSymbols(request.query || "")
+    searchSymbols(request.query || "", request.mode || "stock")
       .then((results) => sendResponse({ results }))
       .catch((error) =>
         sendResponse({
