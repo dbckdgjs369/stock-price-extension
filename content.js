@@ -1,16 +1,15 @@
-const ROOT_ID = "samsung-stock-widget-root";
-const STYLE_ID = "samsung-stock-widget-style";
+const ROOT_ID = "stock-widget-root";
+const STYLE_ID = "stock-widget-style";
 
-let widgetRoot = null;
-let widgetCard = null;
+let root = null;
 let selectionBox = null;
 let selectionState = null;
-let stockDataCache = null;
-let widgetEnabled = true;
-let widgetBounds = null;
-let widgetTheme = null;
-let placementMode = false;
 let dragState = null;
+let resizeState = null;
+let widgets = [];
+let pendingWidgetDraft = null;
+let quotesBySymbol = {};
+let shiftPressed = false;
 
 function injectStyles() {
   if (document.getElementById(STYLE_ID)) {
@@ -22,6 +21,7 @@ function injectStyles() {
   style.textContent = `
     #${ROOT_ID} {
       position: absolute;
+      inset: 0;
       z-index: 2147483646;
       pointer-events: none;
     }
@@ -30,57 +30,84 @@ function injectStyles() {
       display: none;
     }
 
-    #${ROOT_ID} .stock-widget-card {
-      width: 100%;
-      height: 100%;
+    #${ROOT_ID} .stock-widget {
+      position: absolute;
       pointer-events: auto;
       display: grid;
       grid-template-columns: 1fr auto;
-      gap: 10px;
+      gap: 8px;
       align-items: center;
-      padding: 12px 14px;
-      border-radius: 12px;
-      color: var(--stock-color, rgba(17, 24, 39, 0.92));
+      padding: 8px 10px;
       background: transparent;
       border: none;
       box-shadow: none;
-      backdrop-filter: var(--stock-backdrop, none);
+      color: var(--stock-color, rgb(15, 23, 42));
       font-family: var(--stock-font-family, inherit);
-      letter-spacing: normal;
-      overflow: hidden;
+      border-radius: var(--stock-radius, 0px);
+      user-select: none;
+      cursor: default;
     }
 
-    #${ROOT_ID} .stock-widget-card::before {
+    #${ROOT_ID}[data-edit-mode="true"] .stock-widget {
+      cursor: grab;
+    }
+
+    #${ROOT_ID} .stock-widget-resize {
+      position: absolute;
+      right: 2px;
+      bottom: 2px;
+      width: 14px;
+      height: 14px;
+      pointer-events: none;
+      cursor: default;
+      opacity: 0;
+      transition: opacity 120ms ease;
+    }
+
+    #${ROOT_ID}[data-edit-mode="true"] .stock-widget-resize {
+      opacity: 0.5;
+      pointer-events: auto;
+      cursor: nwse-resize;
+    }
+
+    #${ROOT_ID} .stock-widget-resize::before {
       content: "";
       position: absolute;
-      inset: 0;
-      background: none;
-      pointer-events: none;
+      right: 0;
+      bottom: 0;
+      width: 10px;
+      height: 10px;
+      border-right: 1px solid var(--stock-muted, rgba(15, 23, 42, 0.7));
+      border-bottom: 1px solid var(--stock-muted, rgba(15, 23, 42, 0.7));
     }
 
     #${ROOT_ID} .stock-main,
     #${ROOT_ID} .stock-side {
-      position: relative;
-      z-index: 1;
+      min-width: 0;
+    }
+
+    #${ROOT_ID} .stock-label,
+    #${ROOT_ID} .stock-name,
+    #${ROOT_ID} .stock-meta {
+      color: var(--stock-muted, rgba(15, 23, 42, 0.7));
     }
 
     #${ROOT_ID} .stock-label {
       font-size: 11px;
       text-transform: uppercase;
-      color: var(--stock-muted, rgba(71, 85, 105, 0.76));
-      margin-bottom: 3px;
+      margin-bottom: 2px;
     }
 
     #${ROOT_ID} .stock-price {
-      font-size: 24px;
+      font-size: 22px;
       line-height: 1;
       font-weight: 700;
+      color: var(--stock-strong, var(--stock-color, rgb(15, 23, 42)));
     }
 
     #${ROOT_ID} .stock-name {
+      margin-top: 4px;
       font-size: 12px;
-      color: var(--stock-muted, rgba(51, 65, 85, 0.84));
-      margin-top: 5px;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -91,34 +118,19 @@ function injectStyles() {
       font-weight: 700;
       text-align: right;
       white-space: nowrap;
-      color: var(--stock-strong, var(--stock-color, rgba(17, 24, 39, 0.92)));
-    }
-
-    #${ROOT_ID} .stock-change[data-trend="up"] {
-      color: var(--stock-up, var(--stock-strong, rgba(17, 24, 39, 0.92)));
-    }
-
-    #${ROOT_ID} .stock-change[data-trend="down"] {
-      color: var(--stock-down, var(--stock-strong, rgba(17, 24, 39, 0.92)));
-    }
-
-    #${ROOT_ID} .stock-change[data-trend="flat"] {
-      color: var(--stock-muted, rgba(71, 85, 105, 0.78));
+      color: var(--stock-strong, var(--stock-color, rgb(15, 23, 42)));
     }
 
     #${ROOT_ID} .stock-meta {
-      margin-top: 6px;
+      margin-top: 4px;
       font-size: 11px;
       text-align: right;
-      color: var(--stock-muted, rgba(71, 85, 105, 0.78));
     }
 
     .stock-widget-selection {
       position: absolute;
       z-index: 2147483647;
       pointer-events: none;
-      border-radius: 14px;
-      border: none;
       background: rgba(148, 163, 184, 0.12);
       box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.14);
     }
@@ -128,42 +140,20 @@ function injectStyles() {
 }
 
 function ensureRoot() {
-  if (widgetRoot?.isConnected) {
-    return widgetRoot;
+  if (root?.isConnected) {
+    return root;
   }
 
-  widgetRoot = document.createElement("div");
-  widgetRoot.id = ROOT_ID;
-  widgetRoot.dataset.hidden = "true";
-
-  widgetCard = document.createElement("div");
-  widgetCard.className = "stock-widget-card";
-  widgetRoot.appendChild(widgetCard);
-
-  document.documentElement.appendChild(widgetRoot);
-  return widgetRoot;
-}
-
-function withAlpha(color, alpha) {
-  if (!color || color === "transparent") {
-    return `rgba(255, 255, 255, ${alpha})`;
-  }
-
-  const match = color.match(/\d+(\.\d+)?/g);
-  if (!match || match.length < 3) {
-    return color;
-  }
-
-  const [r, g, b] = match;
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  root = document.createElement("div");
+  root.id = ROOT_ID;
+  root.dataset.hidden = "true";
+  root.dataset.editMode = "false";
+  document.documentElement.appendChild(root);
+  return root;
 }
 
 function parseColor(color) {
-  if (!color) {
-    return null;
-  }
-
-  const match = color.match(/\d+(\.\d+)?/g);
+  const match = color?.match(/\d+(\.\d+)?/g);
   if (!match || match.length < 3) {
     return null;
   }
@@ -172,7 +162,6 @@ function parseColor(color) {
     r: Number(match[0]),
     g: Number(match[1]),
     b: Number(match[2]),
-    a: match[3] ? Number(match[3]) : 1,
   };
 }
 
@@ -197,241 +186,162 @@ function getRelativeLuminance(color) {
 }
 
 function getContrastRatio(foreground, background) {
-  const foregroundLum = getRelativeLuminance(foreground);
-  const backgroundLum = getRelativeLuminance(background);
-  const lighter = Math.max(foregroundLum, backgroundLum);
-  const darker = Math.min(foregroundLum, backgroundLum);
+  const fg = getRelativeLuminance(foreground);
+  const bg = getRelativeLuminance(background);
+  const lighter = Math.max(fg, bg);
+  const darker = Math.min(fg, bg);
   return (lighter + 0.05) / (darker + 0.05);
 }
 
+function withAlpha(color, alpha) {
+  const parsed = parseColor(color);
+  if (!parsed) {
+    return color;
+  }
+
+  return `rgba(${parsed.r}, ${parsed.g}, ${parsed.b}, ${alpha})`;
+}
+
 function pickReadableTextColor(preferredColor, backgroundColor) {
-  const darkCandidate = "rgb(15, 23, 42)";
-  const lightCandidate = "rgb(248, 250, 252)";
+  const light = "rgb(248, 250, 252)";
+  const dark = "rgb(15, 23, 42)";
 
   if (getContrastRatio(preferredColor, backgroundColor) >= 4.5) {
     return preferredColor;
   }
 
-  const darkContrast = getContrastRatio(darkCandidate, backgroundColor);
-  const lightContrast = getContrastRatio(lightCandidate, backgroundColor);
-
-  return darkContrast >= lightContrast ? darkCandidate : lightCandidate;
+  return getContrastRatio(light, backgroundColor) > getContrastRatio(dark, backgroundColor)
+    ? light
+    : dark;
 }
 
 function sampleTheme(bounds) {
-  const centerX = Math.max(
+  const x = Math.max(
     0,
     Math.min(window.innerWidth - 1, bounds.left - window.scrollX + bounds.width / 2)
   );
-  const centerY = Math.max(
+  const y = Math.max(
     0,
     Math.min(window.innerHeight - 1, bounds.top - window.scrollY + bounds.height / 2)
   );
 
-  const previousPointerEvents = widgetRoot?.style.pointerEvents || "";
-  if (widgetRoot) {
-    widgetRoot.style.pointerEvents = "none";
+  const previousPointerEvents = root?.style.pointerEvents || "";
+  if (root) {
+    root.style.pointerEvents = "none";
   }
 
-  const sampleElement = document.elementFromPoint(centerX, centerY);
+  const sampleElement = document.elementFromPoint(x, y);
 
-  if (widgetRoot) {
-    widgetRoot.style.pointerEvents = previousPointerEvents;
+  if (root) {
+    root.style.pointerEvents = previousPointerEvents;
   }
 
   const baseElement =
-    sampleElement?.closest("button, a, section, article, aside, nav, div, li, p") ||
+    sampleElement?.closest("button, a, section, article, aside, nav, div, li, p, span") ||
     sampleElement ||
     document.body;
   const computed = window.getComputedStyle(baseElement);
   const bodyStyle = window.getComputedStyle(document.body);
-  const rootStyle = window.getComputedStyle(document.documentElement);
+  const htmlStyle = window.getComputedStyle(document.documentElement);
 
   const backgroundColor =
     computed.backgroundColor && computed.backgroundColor !== "rgba(0, 0, 0, 0)"
       ? computed.backgroundColor
       : bodyStyle.backgroundColor && bodyStyle.backgroundColor !== "rgba(0, 0, 0, 0)"
         ? bodyStyle.backgroundColor
-        : rootStyle.backgroundColor;
+        : htmlStyle.backgroundColor;
 
-  const preferredTextColor = computed.color || bodyStyle.color;
-  const textColor = pickReadableTextColor(preferredTextColor, backgroundColor);
-  const mutedColor = withAlpha(textColor, 0.72);
-  const strongColor = withAlpha(textColor, 0.92);
-  const borderColor =
-    computed.borderColor && computed.borderColor !== "rgba(0, 0, 0, 0)"
-      ? withAlpha(computed.borderColor, 0.38)
-      : withAlpha(textColor, 0.14);
-  const radius = computed.borderRadius && computed.borderRadius !== "0px"
-    ? computed.borderRadius
-    : "12px";
+  const textColor = pickReadableTextColor(computed.color || bodyStyle.color, backgroundColor);
 
   return {
-    backgroundColor,
-    borderColor,
     textColor,
-    mutedColor,
-    strongColor,
-    radius,
+    strongColor: withAlpha(textColor, 0.94),
+    mutedColor: withAlpha(textColor, 0.72),
     fontFamily: computed.fontFamily || bodyStyle.fontFamily,
-    backdrop: "none",
-    overlay: "none",
+    radius:
+      computed.borderRadius && computed.borderRadius !== "0px"
+        ? computed.borderRadius
+        : "0px",
   };
 }
 
-function applyTheme() {
-  if (!widgetCard) {
-    return;
-  }
-
-  const nextTheme = widgetTheme || sampleTheme(widgetBounds);
-  widgetTheme = nextTheme;
-
-  widgetCard.style.setProperty("--stock-color", nextTheme.textColor);
-  widgetCard.style.setProperty("--stock-strong", nextTheme.strongColor);
-  widgetCard.style.setProperty("--stock-font-family", nextTheme.fontFamily);
-  widgetCard.style.setProperty("--stock-backdrop", nextTheme.backdrop);
-  widgetCard.style.setProperty("--stock-overlay", nextTheme.overlay);
-  widgetCard.style.setProperty("--stock-muted", nextTheme.mutedColor);
-  widgetCard.style.borderRadius = nextTheme.radius;
-}
-
-function formatPrice(value) {
-  if (typeof value !== "number") {
+function formatPrice(quote) {
+  if (typeof quote?.price !== "number") {
     return "--";
   }
 
   return new Intl.NumberFormat("ko-KR", {
     style: "currency",
-    currency: "KRW",
-    maximumFractionDigits: 0,
-  }).format(value);
+    currency: quote.currency || "USD",
+    maximumFractionDigits: quote.currency === "KRW" ? 0 : 2,
+  }).format(quote.price);
 }
 
-function formatChange(value) {
-  const absValue = Math.abs(value);
-  return new Intl.NumberFormat("ko-KR", {
-    style: "currency",
-    currency: "KRW",
-    maximumFractionDigits: 0,
-    signDisplay: "never",
-  }).format(absValue);
-}
-
-function formatPercent(value) {
-  const absValue = Math.abs(value);
-  return `${absValue.toFixed(2)}%`;
-}
-
-function getTrend(change) {
-  if (change > 0) {
-    return "up";
+function formatChange(quote) {
+  if (typeof quote?.change !== "number" || typeof quote?.changePercent !== "number") {
+    return "대기 중";
   }
-  if (change < 0) {
-    return "down";
-  }
-  return "flat";
+
+  const direction = quote.change > 0 ? "▲" : quote.change < 0 ? "▼" : "•";
+  const absoluteChange = Math.abs(quote.change);
+  const absolutePercent = Math.abs(quote.changePercent);
+  return `${direction} ${absoluteChange.toLocaleString("ko-KR")} (${absolutePercent.toFixed(
+    2
+  )}%)`;
 }
 
-function getTrendPrefix(change) {
-  if (change > 0) {
-    return "▲";
-  }
-  if (change < 0) {
-    return "▼";
-  }
-  return "•";
-}
-
-function formatUpdatedAt(timestamp) {
-  if (!timestamp) {
-    return "업데이트 정보 없음";
+function formatUpdatedAt(quote) {
+  if (!quote?.updatedAt) {
+    return "";
   }
 
   return new Intl.DateTimeFormat("ko-KR", {
     hour: "2-digit",
     minute: "2-digit",
-    second: "2-digit",
-  }).format(timestamp);
+  }).format(quote.updatedAt);
 }
 
-function renderWidget() {
+function renderWidgets() {
   ensureRoot();
+  root.innerHTML = "";
+  root.dataset.hidden = widgets.length === 0 ? "true" : "false";
+  root.dataset.editMode =
+    shiftPressed || Boolean(selectionState) || Boolean(dragState) || Boolean(resizeState)
+      ? "true"
+      : "false";
 
-  if (!widgetEnabled || !widgetBounds) {
-    widgetRoot.dataset.hidden = "true";
-    return;
-  }
+  for (const widget of widgets) {
+    const quote = quotesBySymbol[widget.symbol] || null;
+    const theme = sampleTheme(widget);
 
-  widgetRoot.dataset.hidden = "false";
-  widgetRoot.style.top = `${widgetBounds.top}px`;
-  widgetRoot.style.left = `${widgetBounds.left}px`;
-  widgetRoot.style.width = `${widgetBounds.width}px`;
-  widgetRoot.style.height = `${widgetBounds.height}px`;
-  applyTheme();
+    const element = document.createElement("div");
+    element.className = "stock-widget";
+    element.dataset.widgetId = widget.id;
+    element.style.left = `${widget.left}px`;
+    element.style.top = `${widget.top}px`;
+    element.style.width = `${widget.width}px`;
+    element.style.height = `${widget.height}px`;
+    element.style.setProperty("--stock-color", theme.textColor);
+    element.style.setProperty("--stock-strong", theme.strongColor);
+    element.style.setProperty("--stock-muted", theme.mutedColor);
+    element.style.setProperty("--stock-font-family", theme.fontFamily);
+    element.style.setProperty("--stock-radius", theme.radius);
 
-  if (!stockDataCache?.price) {
-    widgetCard.innerHTML = `
+    element.innerHTML = `
       <div class="stock-main">
-        <div class="stock-label">Samsung Electronics</div>
-        <div class="stock-price">--</div>
-        <div class="stock-name">시세를 불러오는 중</div>
+        <div class="stock-label">${widget.symbol}</div>
+        <div class="stock-price">${formatPrice(quote)}</div>
+        <div class="stock-name">${widget.shortName}</div>
       </div>
       <div class="stock-side">
-        <div class="stock-change" data-trend="flat">• 대기 중</div>
-        <div class="stock-meta">Shift + 드래그 또는 Shift + 클릭 후 이동</div>
+        <div class="stock-change">${formatChange(quote)}</div>
+        <div class="stock-meta">${formatUpdatedAt(quote)}</div>
       </div>
+      <div class="stock-widget-resize" data-resize-id="${widget.id}"></div>
     `;
-    return;
+
+    root.appendChild(element);
   }
-
-  const trend = getTrend(stockDataCache.change);
-  const prefix = getTrendPrefix(stockDataCache.change);
-
-  widgetCard.innerHTML = `
-    <div class="stock-main">
-      <div class="stock-label">Samsung Electronics</div>
-      <div class="stock-price">${formatPrice(stockDataCache.price)}</div>
-      <div class="stock-name">${stockDataCache.shortName}</div>
-    </div>
-    <div class="stock-side">
-      <div class="stock-change" data-trend="${trend}">
-        ${prefix} ${formatChange(stockDataCache.change)} (${formatPercent(
-    stockDataCache.changePercent
-  )})
-      </div>
-      <div class="stock-meta">${formatUpdatedAt(stockDataCache.updatedAt)}</div>
-    </div>
-  `;
-}
-
-async function loadState() {
-  const stored = await chrome.storage.local.get([
-    "placementMode",
-    "widgetEnabled",
-    "widgetBounds",
-    "stockData",
-  ]);
-
-  widgetEnabled =
-    typeof stored.widgetEnabled === "boolean" ? stored.widgetEnabled : true;
-  placementMode = Boolean(stored.placementMode);
-  widgetBounds = stored.widgetBounds || {
-    top: 96,
-    left: 32,
-    width: 220,
-    height: 84,
-  };
-  stockDataCache = stored.stockData || null;
-
-  renderWidget();
-}
-
-function clearSelectionBox() {
-  if (selectionBox?.isConnected) {
-    selectionBox.remove();
-  }
-  selectionBox = null;
 }
 
 function updateSelectionBox(bounds) {
@@ -447,53 +357,94 @@ function updateSelectionBox(bounds) {
   selectionBox.style.height = `${bounds.height}px`;
 }
 
-function normalizeSelection(startX, startY, endX, endY) {
-  const left = Math.min(startX, endX) + window.scrollX;
-  const top = Math.min(startY, endY) + window.scrollY;
-  const width = Math.max(Math.abs(endX - startX), 180);
-  const height = Math.max(Math.abs(endY - startY), 72);
+function clearSelectionBox() {
+  if (selectionBox?.isConnected) {
+    selectionBox.remove();
+  }
+  selectionBox = null;
+}
 
-  return { left, top, width, height };
+function normalizeBounds(startX, startY, endX, endY) {
+  return {
+    left: Math.min(startX, endX) + window.scrollX,
+    top: Math.min(startY, endY) + window.scrollY,
+    width: Math.max(Math.abs(endX - startX), 180),
+    height: Math.max(Math.abs(endY - startY), 72),
+  };
 }
 
 function clampBounds(bounds) {
   return {
-    top: Math.max(0, bounds.top),
+    ...bounds,
     left: Math.max(0, bounds.left),
-    width: bounds.width,
-    height: bounds.height,
+    top: Math.max(0, bounds.top),
+    width: Math.max(180, bounds.width),
+    height: Math.max(72, bounds.height),
   };
 }
 
-function isValidSelectionStart(event) {
-  if ((!event.shiftKey && !placementMode) || event.button !== 0) {
-    return false;
+function findWidgetFromEvent(event) {
+  const target = event.target?.closest?.(".stock-widget");
+  if (!target) {
+    return null;
   }
 
-  const path = event.composedPath?.() || [];
-  return !path.includes(widgetRoot);
+  return widgets.find((widget) => widget.id === target.dataset.widgetId) || null;
 }
 
-function isWidgetDragStart(event) {
-  if (!event.shiftKey || event.button !== 0 || !widgetRoot || !widgetBounds) {
-    return false;
+function findResizeHandleFromEvent(event) {
+  const target = event.target?.closest?.("[data-resize-id]");
+  if (!target) {
+    return null;
   }
 
-  const path = event.composedPath?.() || [];
-  return path.includes(widgetCard) || path.includes(widgetRoot);
+  return widgets.find((widget) => widget.id === target.dataset.resizeId) || null;
+}
+
+function canStartSelection(event) {
+  return Boolean(event.shiftKey && event.button === 0 && pendingWidgetDraft);
+}
+
+async function loadState() {
+  const stored = await chrome.storage.local.get([
+    "widgets",
+    "pendingWidgetDraft",
+    "quotesBySymbol",
+  ]);
+
+  widgets = Array.isArray(stored.widgets) ? stored.widgets : [];
+  pendingWidgetDraft = stored.pendingWidgetDraft || null;
+  quotesBySymbol = stored.quotesBySymbol || {};
+  renderWidgets();
 }
 
 function handlePointerDown(event) {
-  if (isWidgetDragStart(event)) {
-    dragState = {
-      offsetX: event.clientX + window.scrollX - widgetBounds.left,
-      offsetY: event.clientY + window.scrollY - widgetBounds.top,
+  const resizeWidget = findResizeHandleFromEvent(event);
+  if (event.shiftKey && event.button === 0 && resizeWidget) {
+    resizeState = {
+      widgetId: resizeWidget.id,
+      startX: event.clientX + window.scrollX,
+      startY: event.clientY + window.scrollY,
+      startWidth: resizeWidget.width,
+      startHeight: resizeWidget.height,
     };
     event.preventDefault();
     return;
   }
 
-  if (!isValidSelectionStart(event)) {
+  const widget = findWidgetFromEvent(event);
+
+  if (event.shiftKey && event.button === 0 && widget) {
+    dragState = {
+      widgetId: widget.id,
+      offsetX: event.clientX + window.scrollX - widget.left,
+      offsetY: event.clientY + window.scrollY - widget.top,
+    };
+    event.preventDefault();
+    return;
+  }
+
+  if (!canStartSelection(event) || widget) {
     return;
   }
 
@@ -503,25 +454,43 @@ function handlePointerDown(event) {
   };
 
   updateSelectionBox(
-    normalizeSelection(
-      selectionState.startX,
-      selectionState.startY,
-      event.clientX,
-      event.clientY
-    )
+    normalizeBounds(selectionState.startX, selectionState.startY, event.clientX, event.clientY)
   );
-
   event.preventDefault();
 }
 
 function handlePointerMove(event) {
-  if (dragState && widgetBounds) {
-    widgetBounds = clampBounds({
-      ...widgetBounds,
-      left: event.clientX + window.scrollX - dragState.offsetX,
-      top: event.clientY + window.scrollY - dragState.offsetY,
-    });
-    renderWidget();
+  if (resizeState) {
+    const currentX = event.clientX + window.scrollX;
+    const currentY = event.clientY + window.scrollY;
+    const deltaX = currentX - resizeState.startX;
+    const deltaY = currentY - resizeState.startY;
+
+    widgets = widgets.map((widget) =>
+      widget.id === resizeState.widgetId
+        ? clampBounds({
+            ...widget,
+            width: resizeState.startWidth + deltaX,
+            height: resizeState.startHeight + deltaY,
+          })
+        : widget
+    );
+    renderWidgets();
+    event.preventDefault();
+    return;
+  }
+
+  if (dragState) {
+    widgets = widgets.map((widget) =>
+      widget.id === dragState.widgetId
+        ? clampBounds({
+            ...widget,
+            left: event.clientX + window.scrollX - dragState.offsetX,
+            top: event.clientY + window.scrollY - dragState.offsetY,
+          })
+        : widget
+    );
+    renderWidgets();
     event.preventDefault();
     return;
   }
@@ -531,24 +500,25 @@ function handlePointerMove(event) {
   }
 
   updateSelectionBox(
-    normalizeSelection(
-      selectionState.startX,
-      selectionState.startY,
-      event.clientX,
-      event.clientY
-    )
+    normalizeBounds(selectionState.startX, selectionState.startY, event.clientX, event.clientY)
   );
 }
 
 async function handlePointerUp(event) {
-  if (dragState && widgetBounds) {
+  if (resizeState) {
+    resizeState = null;
+    await chrome.storage.local.set({ widgets });
+    renderWidgets();
+    return;
+  }
+
+  if (dragState) {
+    const movedWidget = widgets.find((widget) => widget.id === dragState.widgetId);
     dragState = null;
-    widgetTheme = sampleTheme(widgetBounds);
-    await chrome.storage.local.set({
-      widgetBounds,
-      widgetEnabled: true,
-    });
-    renderWidget();
+    await chrome.storage.local.set({ widgets });
+    if (movedWidget) {
+      renderWidgets();
+    }
     return;
   }
 
@@ -556,28 +526,36 @@ async function handlePointerUp(event) {
     return;
   }
 
-  const nextBounds = normalizeSelection(
+  const nextBounds = normalizeBounds(
     selectionState.startX,
     selectionState.startY,
     event.clientX,
     event.clientY
   );
-
   selectionState = null;
   clearSelectionBox();
 
-  widgetBounds = nextBounds;
-  widgetTheme = sampleTheme(nextBounds);
-  widgetEnabled = true;
-  placementMode = false;
+  if (!pendingWidgetDraft) {
+    return;
+  }
+
+  const nextWidget = {
+    id: crypto.randomUUID(),
+    symbol: pendingWidgetDraft.symbol,
+    shortName: pendingWidgetDraft.shortName,
+    ...clampBounds(nextBounds),
+  };
+
+  const nextWidgets = [...widgets, nextWidget];
+  widgets = nextWidgets;
+  pendingWidgetDraft = null;
 
   await chrome.storage.local.set({
-    placementMode: false,
-    widgetBounds: nextBounds,
-    widgetEnabled: true,
+    widgets: nextWidgets,
+    pendingWidgetDraft: null,
   });
 
-  renderWidget();
+  renderWidgets();
 }
 
 function handleStorageChange(changes, areaName) {
@@ -585,29 +563,35 @@ function handleStorageChange(changes, areaName) {
     return;
   }
 
-  if (changes.widgetEnabled) {
-    widgetEnabled = changes.widgetEnabled.newValue;
+  if (changes.widgets) {
+    widgets = changes.widgets.newValue || [];
   }
 
-  if (changes.placementMode) {
-    placementMode = changes.placementMode.newValue;
+  if (changes.pendingWidgetDraft) {
+    pendingWidgetDraft = changes.pendingWidgetDraft.newValue || null;
   }
 
-  if (changes.widgetBounds) {
-    widgetBounds = changes.widgetBounds.newValue;
+  if (changes.quotesBySymbol) {
+    quotesBySymbol = changes.quotesBySymbol.newValue || {};
   }
 
-  if (changes.stockData) {
-    stockDataCache = changes.stockData.newValue;
+  renderWidgets();
+}
+
+function handleKeyState(event) {
+  const nextShiftPressed = event.shiftKey;
+  if (shiftPressed === nextShiftPressed) {
+    return;
   }
 
-  renderWidget();
+  shiftPressed = nextShiftPressed;
+  renderWidgets();
 }
 
 chrome.runtime.onMessage.addListener((request) => {
-  if (request.type === "STOCK_DATA_UPDATED") {
-    stockDataCache = request.stockData;
-    renderWidget();
+  if (request.type === "QUOTES_UPDATED") {
+    quotesBySymbol = request.quotesBySymbol || {};
+    renderWidgets();
   }
 });
 
@@ -618,4 +602,6 @@ loadState();
 document.addEventListener("pointerdown", handlePointerDown, true);
 document.addEventListener("pointermove", handlePointerMove, true);
 document.addEventListener("pointerup", handlePointerUp, true);
+document.addEventListener("keydown", handleKeyState, true);
+document.addEventListener("keyup", handleKeyState, true);
 chrome.storage.onChanged.addListener(handleStorageChange);

@@ -1,10 +1,14 @@
 {
   "manifest_version": 3,
-  "name": "Samsung Stock Widget",
-  "version": "2.0.0",
-  "description": "현재 페이지 위에 삼성전자 시세 위젯을 배치합니다",
-  "permissions": ["storage", "alarms", "tabs"],
-  "host_permissions": ["https://query1.finance.yahoo.com/*", "<all_urls>"],
+  "name": "Stock Price Widget",
+  "version": "3.0.0",
+  "description": "웹페이지 위에 여러 주식 시세 위젯을 배치합니다",
+  "permissions": ["storage", "alarms", "tabs", "scripting"],
+  "host_permissions": [
+    "https://query1.finance.yahoo.com/*",
+    "https://query2.finance.yahoo.com/*",
+    "<all_urls>"
+  ],
   "background": {
     "service_worker": "background.js"
   },
