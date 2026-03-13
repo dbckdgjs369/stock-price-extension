@@ -3,217 +3,125 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Crypto Price Settings</title>
+    <title>Samsung Stock Widget</title>
     <style>
       * {
-        margin: 0;
-        padding: 0;
         box-sizing: border-box;
       }
 
       body {
-        width: 300px;
-        padding: 20px;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-          "Helvetica Neue", Arial, sans-serif;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: #fff;
+        width: 320px;
+        margin: 0;
+        padding: 18px;
+        font-family: "SF Pro Text", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+        background:
+          radial-gradient(circle at top left, rgba(255, 255, 255, 0.9), rgba(241, 245, 249, 0.8) 45%, rgba(226, 232, 240, 0.92)),
+          linear-gradient(180deg, #f8fafc, #e2e8f0);
+        color: #0f172a;
+      }
+
+      .panel {
+        border-radius: 18px;
+        padding: 18px;
+        background: rgba(255, 255, 255, 0.72);
+        border: 1px solid rgba(148, 163, 184, 0.24);
+        box-shadow: 0 18px 45px rgba(15, 23, 42, 0.12);
+        backdrop-filter: blur(14px);
+      }
+
+      .eyebrow {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #64748b;
       }
 
       h1 {
-        font-size: 20px;
-        margin-bottom: 15px;
-        text-align: center;
+        margin: 6px 0 14px;
+        font-size: 21px;
+        line-height: 1.1;
       }
 
-      .price-display {
-        background: rgba(255, 255, 255, 0.1);
-        border-radius: 10px;
-        padding: 15px;
-        margin-bottom: 20px;
-        backdrop-filter: blur(10px);
+      .quote {
+        margin-bottom: 16px;
+        padding: 14px;
+        border-radius: 14px;
+        background: rgba(248, 250, 252, 0.9);
       }
 
-      .price-display h2 {
-        font-size: 14px;
-        opacity: 0.8;
-        margin-bottom: 5px;
-      }
-
-      .price-value {
-        font-size: 24px;
-        font-weight: bold;
-        margin: 5px 0;
-      }
-
-      .price-krw {
-        font-size: 16px;
-        opacity: 0.9;
-      }
-
-      .settings {
-        background: rgba(255, 255, 255, 0.1);
-        border-radius: 10px;
-        padding: 15px;
-        backdrop-filter: blur(10px);
-      }
-
-      label {
-        display: block;
-        font-size: 14px;
-        margin-bottom: 8px;
-        font-weight: 500;
-      }
-
-      select {
-        width: 100%;
-        padding: 10px;
-        border: none;
-        border-radius: 5px;
-        font-size: 14px;
-        background: rgba(255, 255, 255, 0.9);
-        color: #333;
-        cursor: pointer;
-        margin-bottom: 15px;
-      }
-
-      select:focus {
-        outline: 2px solid #fff;
-      }
-
-      .update-info {
+      .quote-label {
         font-size: 12px;
-        text-align: center;
-        opacity: 0.7;
-        margin-top: 10px;
+        color: #64748b;
       }
 
-      .loading {
-        text-align: center;
-        padding: 10px;
-        font-size: 14px;
+      .quote-value {
+        margin-top: 6px;
+        font-size: 28px;
+        font-weight: 700;
+        letter-spacing: -0.03em;
       }
 
-      .currency-toggle-container {
+      .status {
+        margin-top: 8px;
+        font-size: 12px;
+        color: #334155;
+      }
+
+      .control-row {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        margin-bottom: 15px;
-        padding: 10px;
-        background: rgba(255, 255, 255, 0.1);
-        border-radius: 8px;
+        margin-bottom: 14px;
       }
 
-      .currency-label {
+      .toggle {
+        display: flex;
+        align-items: center;
+        gap: 10px;
         font-size: 14px;
-        font-weight: 500;
       }
 
-      .toggle-switch {
-        position: relative;
-        width: 80px;
-        height: 36px;
-        background: rgba(255, 255, 255, 0.2);
-        border-radius: 18px;
-        cursor: pointer;
-        transition: all 0.3s ease;
-        display: flex;
-        align-items: center;
-        padding: 0 4px;
-      }
-
-      .toggle-switch:hover {
-        background: rgba(255, 255, 255, 0.3);
-      }
-
-      .toggle-slider {
-        position: absolute;
-        width: 28px;
-        height: 28px;
-        background: white;
-        border-radius: 50%;
-        transition: all 0.3s ease;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 12px;
-        font-weight: bold;
-        color: #667eea;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-      }
-
-      .toggle-switch[data-currency="usd"] .toggle-slider {
-        left: 4px;
-      }
-
-      .toggle-switch[data-currency="krw"] .toggle-slider {
-        left: 48px;
-      }
-
-      .currency-text {
-        position: absolute;
-        font-size: 11px;
+      .button {
+        width: 100%;
+        border: none;
+        border-radius: 12px;
+        padding: 12px 14px;
+        background: #0f172a;
+        color: #f8fafc;
+        font-size: 14px;
         font-weight: 600;
-        transition: opacity 0.3s ease;
+        cursor: pointer;
       }
 
-      .currency-text.left {
-        left: 10px;
-        opacity: 0.5;
-      }
-
-      .currency-text.right {
-        right: 8px;
-        opacity: 0.5;
-      }
-
-      .toggle-switch[data-currency="usd"] .currency-text.left {
-        opacity: 0;
-      }
-
-      .toggle-switch[data-currency="krw"] .currency-text.right {
-        opacity: 0;
+      .hint {
+        margin-top: 12px;
+        font-size: 12px;
+        line-height: 1.5;
+        color: #475569;
       }
     </style>
   </head>
   <body>
-    <h1>🪙 Crypto Price Tracker</h1>
+    <div class="panel">
+      <div class="eyebrow">Pinned Quote</div>
+      <h1>Samsung Electronics</h1>
 
-    <div class="price-display" id="priceDisplay">
-      <div class="loading">가격 정보를 불러오는 중...</div>
-    </div>
-
-    <div class="settings">
-      <label for="cryptoSelect">코인 선택:</label>
-      <select id="cryptoSelect">
-        <option value="bitcoin">Bitcoin (BTC)</option>
-        <option value="ethereum">Ethereum (ETH)</option>
-        <option value="ripple">Ripple (XRP)</option>
-        <option value="cardano">Cardano (ADA)</option>
-        <option value="solana">Solana (SOL)</option>
-        <option value="dogecoin">Dogecoin (DOGE)</option>
-        <option value="polkadot">Polkadot (DOT)</option>
-        <option value="binancecoin">Binance Coin (BNB)</option>
-        <option value="avalanche-2">Avalanche (AVAX)</option>
-        <option value="chainlink">Chainlink (LINK)</option>
-      </select>
-
-      <div class="currency-toggle-container">
-        <span class="currency-label">💱 표시 통화</span>
-        <div class="toggle-switch" id="currencyToggle" data-currency="usd">
-          <span class="currency-text left">USD</span>
-          <div class="toggle-slider">$</div>
-          <span class="currency-text right">KRW</span>
-        </div>
+      <div class="quote">
+        <div class="quote-label">현재가</div>
+        <div class="quote-value" id="priceValue">--</div>
+        <div class="status" id="statusLabel">시세를 불러오는 중</div>
       </div>
 
-      <button id="toggleButton" class="action-button">
-        현재 탭에 가격 표시
-      </button>
+      <div class="control-row">
+        <label class="toggle" for="widgetToggle">
+          <input type="checkbox" id="widgetToggle" />
+          <span>페이지 위젯 표시</span>
+        </label>
+      </div>
 
-      <div class="status-text" id="statusText">클릭하여 이 탭에 가격 표시</div>
-
-      <div class="update-info">10초마다 자동 업데이트</div>
+      <button class="button" id="placeButton" style="margin-bottom: 10px;">위치 다시 잡기</button>
+      <button class="button" id="refreshButton">시세 새로고침</button>
+      <div class="hint" id="moveHint"></div>
     </div>
 
     <script src="popup.js"></script>

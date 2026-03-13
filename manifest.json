@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "Crypto Price in Tab",
-  "version": "1.0.0",
-  "description": "실시간 코인 가격을 탭 타이틀에 표시합니다",
-  "permissions": ["storage", "alarms", "tabs", "scripting"],
-  "host_permissions": ["https://api.coingecko.com/*", "<all_urls>"],
+  "name": "Samsung Stock Widget",
+  "version": "2.0.0",
+  "description": "현재 페이지 위에 삼성전자 시세 위젯을 배치합니다",
+  "permissions": ["storage", "alarms", "tabs"],
+  "host_permissions": ["https://query1.finance.yahoo.com/*", "<all_urls>"],
   "background": {
     "service_worker": "background.js"
   },
@@ -12,7 +12,7 @@
     {
       "matches": ["<all_urls>"],
       "js": ["content.js"],
-      "run_at": "document_start"
+      "run_at": "document_idle"
     }
   ],
   "action": {
