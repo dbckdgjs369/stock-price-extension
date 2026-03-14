@@ -185,6 +185,13 @@ async function ensureContentScriptOnActiveTab() {
   }
 
   try {
+    await chrome.tabs.sendMessage(activeTab.id, { type: "PING_CONTENT_SCRIPT" });
+    return;
+  } catch (error) {
+    // Fall through and inject for tabs that predate extension load.
+  }
+
+  try {
     await chrome.scripting.executeScript({
       target: { tabId: activeTab.id },
       files: ["content.js"],

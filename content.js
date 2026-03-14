@@ -1,5 +1,15 @@
+(() => {
+if (window.__stockWidgetContentScriptLoaded) {
+  return;
+}
+window.__stockWidgetContentScriptLoaded = true;
+
 const ROOT_ID = "stock-widget-root";
 const STYLE_ID = "stock-widget-style";
+const GATE_WS_URL = "wss://api.gateio.ws/ws/v4/";
+const GATE_RECONNECT_MS = 2000;
+const GATE_PAIR_CACHE_MS = 10 * 60 * 1000;
+const GATE_PING_MS = 10000;
 
 let root = null;
 let selectionBox = null;
@@ -10,6 +20,16 @@ let widgets = [];
 let pendingWidgetDraft = null;
 let quotesBySymbol = {};
 let shiftPressed = false;
+let gateSocket = null;
+let gateReconnectTimer = null;
+let gateSubscriptionKey = "";
+let gatePairToSymbols = new Map();
+let gatePingTimer = null;
+let gateAvailablePairsCache = {
+  expiresAt: 0,
+  data: new Set(),
+};
+let gateSyncToken = 0;
 
 function injectStyles() {
   if (document.getElementById(STYLE_ID)) {
@@ -243,6 +263,10 @@ function sampleTheme(bounds) {
   const computed = window.getComputedStyle(baseElement);
   const bodyStyle = window.getComputedStyle(document.body);
   const htmlStyle = window.getComputedStyle(document.documentElement);
+  const pageTextColor =
+    bodyStyle.color && bodyStyle.color !== "rgba(0, 0, 0, 0)"
+      ? bodyStyle.color
+      : htmlStyle.color;
 
   const backgroundColor =
     computed.backgroundColor && computed.backgroundColor !== "rgba(0, 0, 0, 0)"
@@ -251,7 +275,7 @@ function sampleTheme(bounds) {
         ? bodyStyle.backgroundColor
         : htmlStyle.backgroundColor;
 
-  const textColor = pickReadableTextColor(computed.color || bodyStyle.color, backgroundColor);
+  const textColor = pickReadableTextColor(pageTextColor, backgroundColor);
 
   return {
     textColor,
@@ -383,6 +407,280 @@ function clampBounds(bounds) {
   };
 }
 
+function isCryptoSymbol(symbol) {
+  return /^[A-Z0-9]+-(USD|USDT|USDC)$/i.test(symbol);
+}
+
+function toGateCurrencyPair(symbol) {
+  const normalized = String(symbol || "").trim().toUpperCase();
+  const [base, quote] = normalized.split("-");
+
+  if (!base || !quote) {
+    return null;
+  }
+
+  if (quote === "USD") {
+    return null;
+  }
+
+  return `${base}_${quote}`;
+}
+
+function resolveGateCurrencyPair(symbol, availablePairs) {
+  const normalized = String(symbol || "").trim().toUpperCase();
+  const [base, quote] = normalized.split("-");
+
+  if (!base) {
+    return null;
+  }
+
+  const exactPair = toGateCurrencyPair(normalized);
+  if (exactPair && availablePairs.has(exactPair)) {
+    return exactPair;
+  }
+
+  if (quote === "USD") {
+    for (const preferredQuote of ["USDT", "USDC"]) {
+      const candidate = `${base}_${preferredQuote}`;
+      if (availablePairs.has(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  return null;
+}
+
+function normalizeRealtimeGateQuote(symbol, ticker) {
+  const price = Number(ticker?.last);
+  const changePercent = Number(ticker?.change_percentage ?? 0);
+  const change = price * (changePercent / 100);
+
+  return {
+    symbol,
+    shortName: symbol,
+    price: Number.isFinite(price) ? price : null,
+    change: Number.isFinite(change) ? change : 0,
+    changePercent: Number.isFinite(changePercent) ? changePercent : 0,
+    currency: "USD",
+    marketState: "TRADING",
+    exchangeName: "Gate.io",
+    updatedAt: Date.now(),
+  };
+}
+
+async function getGateAvailablePairs() {
+  if (gateAvailablePairsCache.expiresAt > Date.now()) {
+    return gateAvailablePairsCache.data;
+  }
+
+  const response = await chrome.runtime.sendMessage({
+    type: "GET_GATE_CURRENCY_PAIRS",
+  });
+
+  if (response?.error) {
+    throw new Error(response.error);
+  }
+
+  const pairs = Array.isArray(response?.pairs) ? response.pairs : [];
+  const data = new Set(
+    pairs
+      .map((pair) => String(pair?.id || pair?.currency_pair || pair || "").toUpperCase())
+      .filter(Boolean)
+  );
+
+  gateAvailablePairsCache = {
+    expiresAt: Date.now() + GATE_PAIR_CACHE_MS,
+    data,
+  };
+
+  return data;
+}
+
+function clearGateReconnectTimer() {
+  if (gateReconnectTimer) {
+    clearTimeout(gateReconnectTimer);
+    gateReconnectTimer = null;
+  }
+}
+
+function clearGatePingTimer() {
+  if (gatePingTimer) {
+    clearInterval(gatePingTimer);
+    gatePingTimer = null;
+  }
+}
+
+function startGatePing(socket) {
+  clearGatePingTimer();
+
+  gatePingTimer = setInterval(() => {
+    if (gateSocket !== socket || socket.readyState !== WebSocket.OPEN) {
+      clearGatePingTimer();
+      return;
+    }
+
+    socket.send(
+      JSON.stringify({
+        time: Math.floor(Date.now() / 1000),
+        channel: "spot.ping",
+      })
+    );
+  }, GATE_PING_MS);
+}
+
+function closeGateSocket() {
+  clearGateReconnectTimer();
+  clearGatePingTimer();
+
+  if (gateSocket) {
+    gateSocket.onopen = null;
+    gateSocket.onmessage = null;
+    gateSocket.onerror = null;
+    gateSocket.onclose = null;
+    gateSocket.close();
+    gateSocket = null;
+  }
+}
+
+function scheduleGateReconnect() {
+  clearGateReconnectTimer();
+
+  if (!gateSubscriptionKey) {
+    return;
+  }
+
+  gateReconnectTimer = setTimeout(() => {
+    gateReconnectTimer = null;
+    connectGateSocket([...gatePairToSymbols.keys()]);
+  }, GATE_RECONNECT_MS);
+}
+
+function connectGateSocket(currencyPairs) {
+  closeGateSocket();
+
+  if (currencyPairs.length === 0) {
+    return;
+  }
+
+  const socket = new WebSocket(GATE_WS_URL);
+  gateSocket = socket;
+
+  socket.onopen = () => {
+    startGatePing(socket);
+    socket.send(
+      JSON.stringify({
+        time: Math.floor(Date.now() / 1000),
+        channel: "spot.tickers",
+        event: "subscribe",
+        payload: currencyPairs,
+      })
+    );
+  };
+
+  socket.onmessage = (event) => {
+    let message;
+
+    try {
+      message = JSON.parse(event.data);
+    } catch (error) {
+      return;
+    }
+
+    if (message?.channel === "spot.pong") {
+      return;
+    }
+
+    if (message?.event === "subscribe" || message?.event === "unsubscribe") {
+      return;
+    }
+
+    if (message?.channel !== "spot.tickers" || message?.event !== "update") {
+      return;
+    }
+
+    const ticker = message.result;
+    const currencyPair = String(ticker?.currency_pair || "").toUpperCase();
+    const symbols = gatePairToSymbols.get(currencyPair);
+
+    if (!symbols || symbols.length === 0) {
+      return;
+    }
+
+    for (const symbol of symbols) {
+      quotesBySymbol[symbol] = normalizeRealtimeGateQuote(symbol, ticker);
+    }
+
+    renderWidgets();
+  };
+
+  socket.onerror = () => {
+    socket.close();
+  };
+
+  socket.onclose = () => {
+    if (gateSocket === socket) {
+      gateSocket = null;
+      scheduleGateReconnect();
+    }
+  };
+}
+
+async function syncGateRealtimeFeed() {
+  const syncToken = ++gateSyncToken;
+  const cryptoSymbols = [...new Set(widgets.map((widget) => widget.symbol).filter(isCryptoSymbol))];
+
+  if (cryptoSymbols.length === 0) {
+    gateSubscriptionKey = "";
+    gatePairToSymbols = new Map();
+    closeGateSocket();
+    return;
+  }
+
+  let availablePairs;
+
+  try {
+    availablePairs = await getGateAvailablePairs();
+  } catch (error) {
+    scheduleGateReconnect();
+    return;
+  }
+
+  if (syncToken !== gateSyncToken) {
+    return;
+  }
+
+  const nextPairToSymbols = new Map();
+
+  for (const symbol of cryptoSymbols) {
+    const currencyPair = resolveGateCurrencyPair(symbol, availablePairs);
+    if (!currencyPair) {
+      continue;
+    }
+
+    const subscribedSymbols = nextPairToSymbols.get(currencyPair) || [];
+    subscribedSymbols.push(symbol);
+    nextPairToSymbols.set(currencyPair, subscribedSymbols);
+  }
+
+  const nextPairs = [...nextPairToSymbols.keys()].sort();
+  const nextKey = nextPairs.join(",");
+  gatePairToSymbols = nextPairToSymbols;
+
+  if (!nextKey) {
+    gateSubscriptionKey = "";
+    closeGateSocket();
+    return;
+  }
+
+  if (gateSubscriptionKey === nextKey && gateSocket?.readyState === WebSocket.OPEN) {
+    return;
+  }
+
+  gateSubscriptionKey = nextKey;
+  connectGateSocket(nextPairs);
+}
+
 function findWidgetFromEvent(event) {
   const target = event.target?.closest?.(".stock-widget");
   if (!target) {
@@ -416,6 +714,7 @@ async function loadState() {
   pendingWidgetDraft = stored.pendingWidgetDraft || null;
   quotesBySymbol = stored.quotesBySymbol || {};
   renderWidgets();
+  syncGateRealtimeFeed();
 }
 
 function handlePointerDown(event) {
@@ -556,6 +855,7 @@ async function handlePointerUp(event) {
   });
 
   renderWidgets();
+  syncGateRealtimeFeed();
 }
 
 function handleStorageChange(changes, areaName) {
@@ -565,6 +865,7 @@ function handleStorageChange(changes, areaName) {
 
   if (changes.widgets) {
     widgets = changes.widgets.newValue || [];
+    syncGateRealtimeFeed();
   }
 
   if (changes.pendingWidgetDraft) {
@@ -589,6 +890,10 @@ function handleKeyState(event) {
 }
 
 chrome.runtime.onMessage.addListener((request) => {
+  if (request.type === "PING_CONTENT_SCRIPT") {
+    return false;
+  }
+
   if (request.type === "QUOTES_UPDATED") {
     quotesBySymbol = request.quotesBySymbol || {};
     renderWidgets();
@@ -605,3 +910,4 @@ document.addEventListener("pointerup", handlePointerUp, true);
 document.addEventListener("keydown", handleKeyState, true);
 document.addEventListener("keyup", handleKeyState, true);
 chrome.storage.onChanged.addListener(handleStorageChange);
+})();

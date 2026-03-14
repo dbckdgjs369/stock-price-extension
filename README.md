@@ -19,6 +19,13 @@
 3. `압축해제된 확장 프로그램 로드` 클릭
 4. 이 폴더 선택
 
+## Gate.io 키 관리
+
+- 이 확장은 빌드 단계가 없어서 `.env`를 직접 읽지 않습니다.
+- 대신 로컬 전용 파일 `gate-config.local.js`에서 Gate.io API 키를 관리합니다.
+- 예제 형식은 `gate-config.example.js`를 참고하면 됩니다.
+- `gate-config.local.js`는 `.gitignore`에 추가되어 Git에 포함되지 않습니다.
+
 ## 참고
 
 - 시세 및 검색 데이터는 Yahoo Finance 응답을 사용합니다.

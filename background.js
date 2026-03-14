@@ -1,5 +1,97 @@
+try {
+  importScripts("gate-config.local.js");
+} catch (error) {
+  // Local Gate.io credentials are optional during development.
+}
+
 const REFRESH_ALARM = "refresh-stock-widgets";
 const REFRESH_MINUTES = 1;
+const FOREGROUND_REFRESH_MS = 15 * 1000;
+const GATE_API_BASE_URL = "https://api.gateio.ws/api/v4";
+const GATE_TICKER_CACHE_MS = 30 * 1000;
+const GATE_PAIR_CACHE_MS = 10 * 60 * 1000;
+const PREFERRED_GATE_QUOTES = ["USDT", "USDC"];
+let gateTickerCache = {
+  expiresAt: 0,
+  data: new Map(),
+};
+let gatePairCache = {
+  expiresAt: 0,
+  data: [],
+};
+let foregroundRefreshTimer = null;
+
+function isCryptoSymbol(symbol) {
+  return /^[A-Z0-9]+-(USD|USDT|USDC)$/i.test(symbol);
+}
+
+function toGateCurrencyPair(symbol) {
+  const normalized = String(symbol || "").trim().toUpperCase();
+  const [base, quote] = normalized.split("-");
+
+  if (!base || !quote) {
+    return null;
+  }
+
+  if (quote === "USD") {
+    return null;
+  }
+
+  return `${base}_${quote}`;
+}
+
+function buildPublicHeaders() {
+  return {
+    Accept: "application/json",
+  };
+}
+
+function toWidgetCryptoSymbol(currencyPair) {
+  const normalized = String(currencyPair || "").trim().toUpperCase();
+  const [base, quote] = normalized.split("_");
+
+  if (!base || !quote) {
+    return null;
+  }
+
+  return `${base}-${quote}`;
+}
+
+function splitGateCurrencyPair(currencyPair) {
+  const normalized = String(currencyPair || "").trim().toUpperCase();
+  const [base, quote] = normalized.split("_");
+
+  if (!base || !quote) {
+    return null;
+  }
+
+  return { base, quote };
+}
+
+function resolveGateCurrencyPair(symbol, availablePairs) {
+  const normalized = String(symbol || "").trim().toUpperCase();
+  const [base, quote] = normalized.split("-");
+
+  if (!base) {
+    return null;
+  }
+
+  const exactPair = toGateCurrencyPair(normalized);
+  if (exactPair && availablePairs.has(exactPair)) {
+    return exactPair;
+  }
+
+  if (quote === "USD") {
+    for (const preferredQuote of PREFERRED_GATE_QUOTES) {
+      const candidate = `${base}_${preferredQuote}`;
+      if (availablePairs.has(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  return null;
+}
 
 function normalizeQuote(quote) {
   return {
@@ -15,7 +107,25 @@ function normalizeQuote(quote) {
   };
 }
 
-async function fetchQuotes(symbols) {
+function normalizeGateQuote(symbol, ticker) {
+  const price = Number(ticker?.last);
+  const changePercent = Number(ticker?.change_percentage ?? 0);
+  const change = price * (changePercent / 100);
+
+  return {
+    symbol,
+    shortName: symbol,
+    price: Number.isFinite(price) ? price : null,
+    change: Number.isFinite(change) ? change : 0,
+    changePercent: Number.isFinite(changePercent) ? changePercent : 0,
+    currency: "USD",
+    marketState: "TRADING",
+    exchangeName: "Gate.io",
+    updatedAt: Date.now(),
+  };
+}
+
+async function fetchStockQuotes(symbols) {
   if (symbols.length === 0) {
     return {};
   }
@@ -38,7 +148,188 @@ async function fetchQuotes(symbols) {
   );
 }
 
+async function getGateTickers() {
+  if (gateTickerCache.expiresAt > Date.now()) {
+    return gateTickerCache.data;
+  }
+
+  const response = await fetch(`${GATE_API_BASE_URL}/spot/tickers`, {
+    headers: buildPublicHeaders(),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Gate ticker request failed: ${response.status}`);
+  }
+
+  const payload = await response.json();
+  const data = new Map(
+    (Array.isArray(payload) ? payload : [])
+      .filter((ticker) => ticker?.currency_pair)
+      .map((ticker) => [String(ticker.currency_pair).toUpperCase(), ticker])
+  );
+
+  gateTickerCache = {
+    expiresAt: Date.now() + GATE_TICKER_CACHE_MS,
+    data,
+  };
+
+  return data;
+}
+
+async function getGateCurrencyPairs() {
+  if (gatePairCache.expiresAt > Date.now()) {
+    return gatePairCache.data;
+  }
+
+  const response = await fetch(`${GATE_API_BASE_URL}/spot/currency_pairs`, {
+    headers: buildPublicHeaders(),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Gate pair request failed: ${response.status}`);
+  }
+
+  const payload = await response.json();
+  const data = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.currency_pairs)
+      ? payload.currency_pairs
+      : [];
+
+  gatePairCache = {
+    expiresAt: Date.now() + GATE_PAIR_CACHE_MS,
+    data,
+  };
+
+  return data;
+}
+
+async function fetchCryptoQuotes(symbols) {
+  if (symbols.length === 0) {
+    return {};
+  }
+
+  const tickers = await getGateTickers();
+  const availablePairs = new Set(tickers.keys());
+  const entries = symbols.map((symbol) => {
+    const currencyPair = resolveGateCurrencyPair(symbol, availablePairs);
+    const ticker = currencyPair ? tickers.get(currencyPair) || null : null;
+    return [symbol, ticker ? normalizeGateQuote(symbol, ticker) : null];
+  });
+
+  return Object.fromEntries(entries.filter(([, quote]) => quote));
+}
+
+async function fetchQuotes(symbols) {
+  if (symbols.length === 0) {
+    return {};
+  }
+
+  const stockSymbols = symbols.filter((symbol) => !isCryptoSymbol(symbol));
+  const cryptoSymbols = symbols.filter((symbol) => isCryptoSymbol(symbol));
+  const [stockQuotesResult, cryptoQuotesResult] = await Promise.allSettled([
+    fetchStockQuotes(stockSymbols),
+    fetchCryptoQuotes(cryptoSymbols),
+  ]);
+
+  const stockQuotes =
+    stockQuotesResult.status === "fulfilled" ? stockQuotesResult.value : {};
+  const cryptoQuotes =
+    cryptoQuotesResult.status === "fulfilled" ? cryptoQuotesResult.value : {};
+
+  if (stockQuotesResult.status === "rejected") {
+    console.error("주식 시세 갱신 실패:", stockQuotesResult.reason);
+  }
+
+  if (cryptoQuotesResult.status === "rejected") {
+    console.error("코인 시세 갱신 실패:", cryptoQuotesResult.reason);
+  }
+
+  return {
+    ...stockQuotes,
+    ...cryptoQuotes,
+  };
+}
+
 async function searchSymbols(query, mode = "stock") {
+  if (mode === "crypto") {
+    const normalizedQuery = String(query || "").trim().toUpperCase();
+
+    if (!normalizedQuery) {
+      return [];
+    }
+
+    const pairs = await getGateCurrencyPairs();
+
+    return pairs
+      .filter((pair) => {
+        const currencyPair = String(pair?.id || pair?.currency_pair || pair || "").toUpperCase();
+        const splitPair = splitGateCurrencyPair(currencyPair);
+
+        if (!splitPair) {
+          return false;
+        }
+
+        const widgetSymbol = toWidgetCryptoSymbol(currencyPair) || "";
+
+        return (
+          PREFERRED_GATE_QUOTES.includes(splitPair.quote) &&
+          (currencyPair.includes(normalizedQuery) ||
+            splitPair.base.includes(normalizedQuery) ||
+            widgetSymbol.includes(normalizedQuery))
+        );
+      })
+      .sort((leftPair, rightPair) => {
+        const leftCurrencyPair = String(
+          leftPair?.id || leftPair?.currency_pair || leftPair || ""
+        ).toUpperCase();
+        const rightCurrencyPair = String(
+          rightPair?.id || rightPair?.currency_pair || rightPair || ""
+        ).toUpperCase();
+        const leftSplitPair = splitGateCurrencyPair(leftCurrencyPair);
+        const rightSplitPair = splitGateCurrencyPair(rightCurrencyPair);
+        const leftExactBase = leftSplitPair?.base === normalizedQuery ? 0 : 1;
+        const rightExactBase = rightSplitPair?.base === normalizedQuery ? 0 : 1;
+        const leftQuoteRank = PREFERRED_GATE_QUOTES.indexOf(leftSplitPair?.quote || "");
+        const rightQuoteRank = PREFERRED_GATE_QUOTES.indexOf(rightSplitPair?.quote || "");
+        const normalizedLeftRank = leftQuoteRank === -1 ? Number.MAX_SAFE_INTEGER : leftQuoteRank;
+        const normalizedRightRank =
+          rightQuoteRank === -1 ? Number.MAX_SAFE_INTEGER : rightQuoteRank;
+
+        if (leftExactBase !== rightExactBase) {
+          return leftExactBase - rightExactBase;
+        }
+
+        if (normalizedLeftRank !== normalizedRightRank) {
+          return normalizedLeftRank - normalizedRightRank;
+        }
+
+        return leftCurrencyPair.localeCompare(rightCurrencyPair);
+      })
+      .slice(0, 8)
+      .map((pair) => {
+        const currencyPair = String(pair?.id || pair?.currency_pair || pair || "").toUpperCase();
+        const splitPair = splitGateCurrencyPair(currencyPair);
+
+        if (!splitPair) {
+          return null;
+        }
+
+        const symbol = toWidgetCryptoSymbol(currencyPair) || `${splitPair.base}-USD`;
+
+        return {
+          symbol,
+          shortName: `${splitPair.base}/${splitPair.quote}`,
+          exchange: "Gate.io",
+          type: "CRYPTOCURRENCY",
+        };
+      })
+      .filter(Boolean)
+      .filter((result, index, results) => {
+        return results.findIndex((item) => item.symbol === result.symbol) === index;
+      });
+  }
+
   const response = await fetch(
     `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(
       query
@@ -114,6 +405,37 @@ async function refreshQuotes() {
   }
 }
 
+function scheduleForegroundRefresh() {
+  if (foregroundRefreshTimer) {
+    clearTimeout(foregroundRefreshTimer);
+  }
+
+  foregroundRefreshTimer = setTimeout(async () => {
+    foregroundRefreshTimer = null;
+
+    try {
+      const tabs = await chrome.tabs.query({});
+      const hasUsableTab = tabs.some(
+        (tab) =>
+          tab.url &&
+          !tab.url.startsWith("chrome://") &&
+          !tab.url.startsWith("edge://") &&
+          !tab.url.startsWith("chrome-extension://") &&
+          !tab.url.startsWith("about:")
+      );
+
+      if (!hasUsableTab) {
+        scheduleForegroundRefresh();
+        return;
+      }
+
+      await refreshQuotes();
+    } finally {
+      scheduleForegroundRefresh();
+    }
+  }, FOREGROUND_REFRESH_MS);
+}
+
 async function initializeDefaults() {
   const current = await chrome.storage.local.get([
     "widgets",
@@ -150,12 +472,14 @@ chrome.runtime.onInstalled.addListener(async () => {
   await initializeDefaults();
   await ensureRefreshAlarm();
   await refreshQuotes();
+  scheduleForegroundRefresh();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
   await initializeDefaults();
   await ensureRefreshAlarm();
   await refreshQuotes();
+  scheduleForegroundRefresh();
 });
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -192,6 +516,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .catch((error) =>
         sendResponse({
           results: [],
+          error: error instanceof Error ? error.message : String(error),
+        })
+      );
+    return true;
+  }
+
+  if (request.type === "GET_GATE_CURRENCY_PAIRS") {
+    getGateCurrencyPairs()
+      .then((pairs) => sendResponse({ pairs }))
+      .catch((error) =>
+        sendResponse({
+          pairs: [],
           error: error instanceof Error ? error.message : String(error),
         })
       );
@@ -244,3 +580,4 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 refreshQuotes();
+scheduleForegroundRefresh();
