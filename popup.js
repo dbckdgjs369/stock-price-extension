@@ -3,7 +3,6 @@ const searchInput = document.getElementById("searchInput");
 const searchModeButtons = document.querySelectorAll("[data-search-mode]");
 const searchStatus = document.getElementById("searchStatus");
 const searchResults = document.getElementById("searchResults");
-const manualCreate = document.getElementById("manualCreate");
 const pendingSection = document.getElementById("pendingSection");
 const pendingLabel = document.getElementById("pendingLabel");
 const clearPendingButton = document.getElementById("clearPendingButton");
@@ -96,7 +95,6 @@ function renderWidgets() {
 
 function renderSearchResults(results) {
   searchResults.innerHTML = "";
-  manualCreate.innerHTML = "";
 
   if (results.length === 0) {
     searchStatus.textContent = "검색 결과가 없습니다.";
@@ -121,34 +119,6 @@ function renderSearchResults(results) {
   }
 }
 
-function renderManualCreate(query, message) {
-  const trimmed = query.trim();
-  manualCreate.innerHTML = "";
-
-  if (!trimmed) {
-    return;
-  }
-
-  if (message) {
-    searchStatus.textContent = message;
-  }
-
-  const manualEntry = normalizeManualEntry(trimmed);
-
-  const item = document.createElement("div");
-  item.className = "result-item";
-  item.innerHTML = `
-    <div>
-      <div class="result-title">${manualEntry.shortName}</div>
-      <div class="result-subtitle">${manualEntry.symbol} · 검색 없이 입력값으로 바로 생성</div>
-    </div>
-    <button class="action-button" data-symbol="${manualEntry.symbol}" data-name="${encodeURIComponent(
-    manualEntry.shortName
-  )}">생성</button>
-  `;
-  manualCreate.appendChild(item);
-}
-
 async function loadState() {
   popupState = await chrome.runtime.sendMessage({ type: "GET_POPUP_STATE" });
   searchStatus.textContent = popupState.stockError || "";
@@ -162,7 +132,6 @@ searchModeButtons.forEach((button) => {
     searchMode = button.dataset.searchMode || "stock";
     updateSearchModeUI();
     searchResults.innerHTML = "";
-    manualCreate.innerHTML = "";
     searchStatus.textContent = "";
   });
 });
@@ -208,13 +177,11 @@ searchForm.addEventListener("submit", async (event) => {
   if (!query) {
     searchStatus.textContent = "종목명이나 티커를 입력하세요.";
     searchResults.innerHTML = "";
-    manualCreate.innerHTML = "";
     return;
   }
 
   searchStatus.textContent = "검색 중...";
   searchResults.innerHTML = "";
-  renderManualCreate(query);
 
   const response = await chrome.runtime.sendMessage({
     type: "SEARCH_SYMBOLS",
@@ -223,12 +190,11 @@ searchForm.addEventListener("submit", async (event) => {
   });
 
   if (response.error) {
-    renderManualCreate(query, `${response.error} · 입력값으로 바로 생성할 수 있습니다.`);
+    searchStatus.textContent = response.error;
     return;
   }
 
   renderSearchResults(response.results || []);
-  renderManualCreate(query);
 });
 
 async function handleCreateButtonClick(event) {
@@ -255,7 +221,6 @@ async function handleCreateButtonClick(event) {
 }
 
 searchResults.addEventListener("click", handleCreateButtonClick);
-manualCreate.addEventListener("click", handleCreateButtonClick);
 
 clearPendingButton.addEventListener("click", async () => {
   await chrome.runtime.sendMessage({
